@@ -1,17 +1,33 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sync/atomic"
+
+	"github.com/joho/godotenv"
+	"github.com/kaiserkimguin/chirpy/internal/database"
+	_ "github.com/lib/pq"
 )
 
 func main() {
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
 	cfg := &apiConfig{}
+	cfg.dbQueries = database.New(db)
+	cfg.platform = os.Getenv("PLATFORM")
 	ServeMux := http.NewServeMux()
 	ServeMux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
+	ServeMux.HandleFunc("POST /api/users", cfg.handlerApiUsers)
 	ServeMux.HandleFunc("GET /admin/metrics/", cfg.handlerMetrics)
 	ServeMux.HandleFunc("POST /admin/reset/", cfg.handlerReset)
 	ServeMux.HandleFunc("POST /api/validate_chirp/", handlerValidateChirp)
@@ -25,6 +41,8 @@ func main() {
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries      *database.Queries
+	platform       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -52,10 +70,17 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
+	if cfg.platform != "dev" {
+		respondWithError(w, 403, "Forbidden")
+	}
+	_, err := cfg.dbQueries.DeleteUsers(r.Context())
+	if err != nil {
+		respondWithError(w, 500, "unable to reset users")
+	}
 	cfg.fileserverHits.Store(0)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("request-counter reset"))
+	w.Write([]byte("request-counter & users reset"))
 }
 
 func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
@@ -67,24 +92,52 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	err := decoder.Decode(&cB)
 	if err != nil {
 		log.Printf("Error decoding parameters: %s", err)
-		w.WriteHeader(500)
+		w.WriteHeader(400)
 		return
 	}
 	// if request was successful: test body for length and respond accordingly
 	type returnValid struct {
-		Valid bool `json:"valid"`
+		Valid       bool   `json:"valid"`
+		CleanedBody string `json:"cleaned_body"`
 	}
 
-	type returnError struct {
-		Error string `json:"error"`
-	}
+	// clean the body before accepting the post.
+	cB.Body = getCleanedBody(cB.Body)
+	rV := returnValid{CleanedBody: cB.Body}
 
 	if len(cB.Body) < 1 {
 		respondWithError(w, 400, "chirp cannot be empty")
 	} else if len(cB.Body) > 140 {
 		respondWithError(w, 400, "chirp is too long")
 	} else {
-		rV := returnValid{Valid: true}
+		rV.Valid = true
 		respondWithJSON(w, 200, rV)
 	}
+}
+
+func (cfg *apiConfig) handlerApiUsers(w http.ResponseWriter, r *http.Request) {
+	// decode request body
+	type parameters struct {
+		Email string `json:"email"`
+	}
+	params := parameters{}
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 400, "bad request")
+		return
+	}
+	// create and write response
+	u, err := cfg.dbQueries.CreateUser(r.Context(), params.Email)
+	if err != nil {
+		respondWithError(w, 500, "unable to create user")
+		return
+	}
+	jsonUser := User{
+		ID:        u.ID,
+		CreatedAt: u.CreatedAt,
+		UpdatedAt: u.UpdatedAt,
+		Email:     u.Email,
+	}
+	respondWithJSON(w, 201, jsonUser)
 }
