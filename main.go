@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync/atomic"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/kaiserkimguin/chirpy/internal/database"
 	_ "github.com/lib/pq"
@@ -30,8 +31,8 @@ func main() {
 	ServeMux.HandleFunc("POST /api/users", cfg.handlerApiUsers)
 	ServeMux.HandleFunc("GET /admin/metrics/", cfg.handlerMetrics)
 	ServeMux.HandleFunc("POST /admin/reset/", cfg.handlerReset)
-	ServeMux.HandleFunc("POST /api/validate_chirp/", handlerValidateChirp)
 	ServeMux.HandleFunc("GET /api/healthz", handlerHealthz)
+	ServeMux.HandleFunc("POST /api/chirps", cfg.handlerPostChirp)
 	server := &http.Server{
 		Addr:    ":8080",
 		Handler: ServeMux,
@@ -83,38 +84,6 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("request-counter & users reset"))
 }
 
-func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
-	type chirpBody struct {
-		Body string `json:"body"`
-	}
-	decoder := json.NewDecoder(r.Body)
-	cB := chirpBody{}
-	err := decoder.Decode(&cB)
-	if err != nil {
-		log.Printf("Error decoding parameters: %s", err)
-		w.WriteHeader(400)
-		return
-	}
-	// if request was successful: test body for length and respond accordingly
-	type returnValid struct {
-		Valid       bool   `json:"valid"`
-		CleanedBody string `json:"cleaned_body"`
-	}
-
-	// clean the body before accepting the post.
-	cB.Body = getCleanedBody(cB.Body)
-	rV := returnValid{CleanedBody: cB.Body}
-
-	if len(cB.Body) < 1 {
-		respondWithError(w, 400, "chirp cannot be empty")
-	} else if len(cB.Body) > 140 {
-		respondWithError(w, 400, "chirp is too long")
-	} else {
-		rV.Valid = true
-		respondWithJSON(w, 200, rV)
-	}
-}
-
 func (cfg *apiConfig) handlerApiUsers(w http.ResponseWriter, r *http.Request) {
 	// decode request body
 	type parameters struct {
@@ -140,4 +109,38 @@ func (cfg *apiConfig) handlerApiUsers(w http.ResponseWriter, r *http.Request) {
 		Email:     u.Email,
 	}
 	respondWithJSON(w, 201, jsonUser)
+}
+
+func (cfg *apiConfig) handlerPostChirp(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(400)
+		return
+	}
+	params.Body, err = getCleanedBody(params.Body)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+	}
+	chi, err := cfg.dbQueries.CreatePost(r.Context(), database.CreatePostParams{
+		Body:   params.Body,
+		UserID: params.UserID,
+	})
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+	}
+	chirpResponse := Chirp{
+		ID:        chi.ID,
+		CreatedAt: chi.CreatedAt,
+		UpdatedAt: chi.UpdatedAt,
+		Body:      chi.Body,
+		UserID:    chi.UserID,
+	}
+	respondWithJSON(w, 201, chirpResponse)
 }

@@ -5,6 +5,11 @@ INSERT INTO users (
   gen_random_uuid(), NOW(), NOW(), $1
 ) RETURNING *;
 
+-- name: GetUser :one
+SELECT *
+FROM users
+WHERE email = $1;
+
 -- name: DeleteUsers :many
 DELETE FROM users
 RETURNING *;

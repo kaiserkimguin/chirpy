@@ -1,10 +1,11 @@
 package main
 
 import (
+	"errors"
 	"strings"
 )
 
-func getCleanedBody(cB string) string {
+func getCleanedBody(cB string) (string, error) {
 	splitCB := strings.Split(cB, " ")
 	for i, word := range splitCB {
 		lc := strings.ToLower(word)
@@ -13,5 +14,9 @@ func getCleanedBody(cB string) string {
 		}
 	}
 	joinedCB := strings.Join(splitCB, " ")
-	return joinedCB
+	if len(joinedCB) > 140 {
+		return "", errors.New("bad request")
+	} else {
+		return joinedCB, nil
+	}
 }
