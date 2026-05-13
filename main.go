@@ -33,6 +33,8 @@ func main() {
 	ServeMux.HandleFunc("POST /admin/reset/", cfg.handlerReset)
 	ServeMux.HandleFunc("GET /api/healthz", handlerHealthz)
 	ServeMux.HandleFunc("POST /api/chirps", cfg.handlerPostChirp)
+	ServeMux.HandleFunc("GET /api/chirps", cfg.handlerGetChirps)
+	ServeMux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirp)
 	server := &http.Server{
 		Addr:    ":8080",
 		Handler: ServeMux,
@@ -143,4 +145,46 @@ func (cfg *apiConfig) handlerPostChirp(w http.ResponseWriter, r *http.Request) {
 		UserID:    chi.UserID,
 	}
 	respondWithJSON(w, 201, chirpResponse)
+}
+
+func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
+	chirps, err := cfg.dbQueries.GetChirps(r.Context())
+	if err != nil {
+		respondWithError(w, 500, err.Error())
+	}
+	var chirpsJson []Chirp
+
+	for _, chi := range chirps {
+		chripJSON := Chirp{
+			ID:        chi.ID,
+			CreatedAt: chi.CreatedAt,
+			UpdatedAt: chi.UpdatedAt,
+			Body:      chi.Body,
+			UserID:    chi.UserID,
+		}
+		chirpsJson = append(chirpsJson, chripJSON)
+	}
+	respondWithJSON(w, 200, chirpsJson)
+}
+
+func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
+	chiIDString := r.PathValue("chirpID")
+	chiID, err := uuid.Parse(chiIDString)
+	if err != nil {
+		respondWithError(w, 404, err.Error())
+		return
+	}
+	chi, err := cfg.dbQueries.GetChirp(r.Context(), chiID)
+	if err != nil {
+		respondWithError(w, 404, err.Error())
+		return
+	}
+	chirpResponse := Chirp{
+		ID:        chi.ID,
+		CreatedAt: chi.CreatedAt,
+		UpdatedAt: chi.UpdatedAt,
+		Body:      chi.Body,
+		UserID:    chi.UserID,
+	}
+	respondWithJSON(w, 200, chirpResponse)
 }
