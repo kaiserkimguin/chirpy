@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"github.com/kaiserkimguin/chirpy/internal/auth"
 	"github.com/kaiserkimguin/chirpy/internal/database"
 	_ "github.com/lib/pq"
 )
@@ -29,6 +30,7 @@ func main() {
 	ServeMux := http.NewServeMux()
 	ServeMux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	ServeMux.HandleFunc("POST /api/users", cfg.handlerApiUsers)
+	ServeMux.HandleFunc("POST /api/login", cfg.handlerApiLogin)
 	ServeMux.HandleFunc("GET /admin/metrics/", cfg.handlerMetrics)
 	ServeMux.HandleFunc("POST /admin/reset/", cfg.handlerReset)
 	ServeMux.HandleFunc("GET /api/healthz", handlerHealthz)
@@ -75,10 +77,12 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	if cfg.platform != "dev" {
 		respondWithError(w, 403, "Forbidden")
+		return
 	}
 	_, err := cfg.dbQueries.DeleteUsers(r.Context())
 	if err != nil {
 		respondWithError(w, 500, "unable to reset users")
+		return
 	}
 	cfg.fileserverHits.Store(0)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -89,7 +93,8 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 func (cfg *apiConfig) handlerApiUsers(w http.ResponseWriter, r *http.Request) {
 	// decode request body
 	type parameters struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	params := parameters{}
 	decoder := json.NewDecoder(r.Body)
@@ -98,8 +103,16 @@ func (cfg *apiConfig) handlerApiUsers(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 400, "bad request")
 		return
 	}
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(w, 500, "to be determined")
+		return
+	}
 	// create and write response
-	u, err := cfg.dbQueries.CreateUser(r.Context(), params.Email)
+	u, err := cfg.dbQueries.CreateUser(r.Context(), database.CreateUserParams{
+		Email:          params.Email,
+		HashedPassword: hashedPassword,
+	})
 	if err != nil {
 		respondWithError(w, 500, "unable to create user")
 		return
@@ -111,6 +124,39 @@ func (cfg *apiConfig) handlerApiUsers(w http.ResponseWriter, r *http.Request) {
 		Email:     u.Email,
 	}
 	respondWithJSON(w, 201, jsonUser)
+}
+
+func (cfg *apiConfig) handlerApiLogin(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+	params := parameters{}
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 400, "bad request")
+		return
+	}
+	// get user from database
+	user, err := cfg.dbQueries.GetUser(r.Context(), params.Email)
+	if err != nil {
+		respondWithError(w, 401, "incorrect email or password")
+		return
+	}
+	// check password before returning
+	match, err := auth.CheckPasswordHash(params.Password, user.HashedPassword)
+	if err != nil || match == false {
+		respondWithError(w, 401, "incorrect email or password")
+		return
+	}
+	jsonUser := User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+	respondWithJSON(w, 200, jsonUser)
 }
 
 func (cfg *apiConfig) handlerPostChirp(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +175,7 @@ func (cfg *apiConfig) handlerPostChirp(w http.ResponseWriter, r *http.Request) {
 	params.Body, err = getCleanedBody(params.Body)
 	if err != nil {
 		respondWithError(w, 400, err.Error())
+		return
 	}
 	chi, err := cfg.dbQueries.CreatePost(r.Context(), database.CreatePostParams{
 		Body:   params.Body,
@@ -136,6 +183,7 @@ func (cfg *apiConfig) handlerPostChirp(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		respondWithError(w, 400, err.Error())
+		return
 	}
 	chirpResponse := Chirp{
 		ID:        chi.ID,
@@ -151,6 +199,7 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 	chirps, err := cfg.dbQueries.GetChirps(r.Context())
 	if err != nil {
 		respondWithError(w, 500, err.Error())
+		return
 	}
 	var chirpsJson []Chirp
 
