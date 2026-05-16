@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -27,6 +28,7 @@ func main() {
 	cfg := &apiConfig{}
 	cfg.dbQueries = database.New(db)
 	cfg.platform = os.Getenv("PLATFORM")
+	cfg.tokenSecret = os.Getenv("TOKEN_SECRET")
 	ServeMux := http.NewServeMux()
 	ServeMux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	ServeMux.HandleFunc("POST /api/users", cfg.handlerApiUsers)
@@ -48,6 +50,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	platform       string
+	tokenSecret    string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -128,8 +131,9 @@ func (cfg *apiConfig) handlerApiUsers(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handlerApiLogin(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Password string `json:"password"`
-		Email    string `json:"email"`
+		Password  string `json:"password"`
+		Email     string `json:"email"`
+		ExpiresIn int    `json:"expires_in_seconds"`
 	}
 	params := parameters{}
 	decoder := json.NewDecoder(r.Body)
@@ -137,6 +141,10 @@ func (cfg *apiConfig) handlerApiLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respondWithError(w, 400, "bad request")
 		return
+	}
+	// check wether expiresIn was set by user
+	if params.ExpiresIn == 0 || params.ExpiresIn > 3600 {
+		params.ExpiresIn = 3600
 	}
 	// get user from database
 	user, err := cfg.dbQueries.GetUser(r.Context(), params.Email)
@@ -150,19 +158,27 @@ func (cfg *apiConfig) handlerApiLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 401, "incorrect email or password")
 		return
 	}
+	// create token for session
+	eI := time.Second * time.Duration(params.ExpiresIn)
+	token, err := auth.MakeJWT(user.ID, cfg.tokenSecret, eI)
+	if err != nil {
+		respondWithError(w, 400, "bad request")
+		return
+	}
+	// create user struct to return
 	jsonUser := User{
 		ID:        user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email:     user.Email,
+		Token:     token,
 	}
 	respondWithJSON(w, 200, jsonUser)
 }
 
 func (cfg *apiConfig) handlerPostChirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body   string    `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
+		Body string `json:"body"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
@@ -172,6 +188,18 @@ func (cfg *apiConfig) handlerPostChirp(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 		return
 	}
+	// check valid login
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "unauthorized")
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.tokenSecret)
+	if err != nil {
+		respondWithError(w, 401, "unauthorizedA")
+		return
+	}
+	// Clean the chrip before posting
 	params.Body, err = getCleanedBody(params.Body)
 	if err != nil {
 		respondWithError(w, 400, err.Error())
@@ -179,7 +207,7 @@ func (cfg *apiConfig) handlerPostChirp(w http.ResponseWriter, r *http.Request) {
 	}
 	chi, err := cfg.dbQueries.CreatePost(r.Context(), database.CreatePostParams{
 		Body:   params.Body,
-		UserID: params.UserID,
+		UserID: userID,
 	})
 	if err != nil {
 		respondWithError(w, 400, err.Error())
