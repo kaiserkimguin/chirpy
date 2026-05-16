@@ -33,6 +33,8 @@ func main() {
 	ServeMux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	ServeMux.HandleFunc("POST /api/users", cfg.handlerApiUsers)
 	ServeMux.HandleFunc("POST /api/login", cfg.handlerApiLogin)
+	ServeMux.HandleFunc("POST /api/refresh", cfg.handlerApiRefresh)
+	ServeMux.HandleFunc("POST /api/revoke", cfg.handlerApiRevoke)
 	ServeMux.HandleFunc("GET /admin/metrics/", cfg.handlerMetrics)
 	ServeMux.HandleFunc("POST /admin/reset/", cfg.handlerReset)
 	ServeMux.HandleFunc("GET /api/healthz", handlerHealthz)
@@ -131,9 +133,8 @@ func (cfg *apiConfig) handlerApiUsers(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handlerApiLogin(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Password  string `json:"password"`
-		Email     string `json:"email"`
-		ExpiresIn int    `json:"expires_in_seconds"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 	params := parameters{}
 	decoder := json.NewDecoder(r.Body)
@@ -142,10 +143,7 @@ func (cfg *apiConfig) handlerApiLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 400, "bad request")
 		return
 	}
-	// check wether expiresIn was set by user
-	if params.ExpiresIn == 0 || params.ExpiresIn > 3600 {
-		params.ExpiresIn = 3600
-	}
+
 	// get user from database
 	user, err := cfg.dbQueries.GetUser(r.Context(), params.Email)
 	if err != nil {
@@ -158,8 +156,23 @@ func (cfg *apiConfig) handlerApiLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 401, "incorrect email or password")
 		return
 	}
-	// create token for session
-	eI := time.Second * time.Duration(params.ExpiresIn)
+	// create refresh token and store it in the database
+	refreshToken := auth.MakeRefreshToken()
+	expiresAt := time.Now().UTC().Add(time.Hour * 24 * 60)
+	tokenParams := database.CreateRefreshTokenParams{
+		Token:     refreshToken,
+		UserID:    user.ID,
+		ExpiresAt: expiresAt,
+	}
+	rT, err := cfg.dbQueries.CreateRefreshToken(r.Context(), tokenParams)
+	if err != nil {
+		fmt.Print(err)
+		respondWithError(w, 400, "bad requestA")
+		return
+	}
+
+	// create acces token for session set to 60min
+	eI := time.Second * time.Duration(3600)
 	token, err := auth.MakeJWT(user.ID, cfg.tokenSecret, eI)
 	if err != nil {
 		respondWithError(w, 400, "bad request")
@@ -167,13 +180,52 @@ func (cfg *apiConfig) handlerApiLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	// create user struct to return
 	jsonUser := User{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
-		Token:     token,
+		ID:           user.ID,
+		CreatedAt:    user.CreatedAt,
+		UpdatedAt:    user.UpdatedAt,
+		Email:        user.Email,
+		Token:        token,
+		RefreshToken: rT.Token,
 	}
 	respondWithJSON(w, 200, jsonUser)
+}
+
+func (cfg *apiConfig) handlerApiRefresh(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "unauthorized")
+		return
+	}
+	userIDVal, err := cfg.dbQueries.GetRefreshToken(r.Context(), refreshToken)
+	if err != nil {
+		fmt.Print(err)
+		respondWithError(w, 401, "unauthorizedA")
+		return
+	}
+	eI := time.Hour
+	newAccess, err := auth.MakeJWT(userIDVal, cfg.tokenSecret, eI)
+	if err != nil {
+		respondWithError(w, 400, "bad request")
+		return
+	}
+	jsonToken := Token{
+		Token: newAccess,
+	}
+	respondWithJSON(w, 200, jsonToken)
+}
+
+func (cfg *apiConfig) handlerApiRevoke(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "unauthorized")
+		return
+	}
+	_, err = cfg.dbQueries.RevokeRefresh(r.Context(), refreshToken)
+	if err != nil {
+		respondWithError(w, 400, "bad request")
+		return
+	}
+	respondWithJSON(w, 204, Token{})
 }
 
 func (cfg *apiConfig) handlerPostChirp(w http.ResponseWriter, r *http.Request) {
