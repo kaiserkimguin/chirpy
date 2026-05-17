@@ -34,6 +34,7 @@ func main() {
 	ServeMux.HandleFunc("POST /api/users", cfg.handlerApiUsers)
 	ServeMux.HandleFunc("PUT /api/users", cfg.handlerApiUpdate)
 	ServeMux.HandleFunc("POST /api/login", cfg.handlerApiLogin)
+	ServeMux.HandleFunc("POST /api/polka/webhooks", cfg.handlerApiPolka)
 	ServeMux.HandleFunc("POST /api/refresh", cfg.handlerApiRefresh)
 	ServeMux.HandleFunc("POST /api/revoke", cfg.handlerApiRevoke)
 	ServeMux.HandleFunc("GET /admin/metrics/", cfg.handlerMetrics)
@@ -129,6 +130,7 @@ func (cfg *apiConfig) handlerApiUsers(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: u.CreatedAt,
 		UpdatedAt: u.UpdatedAt,
 		Email:     u.Email,
+		IsRed:     u.IsRed,
 	}
 	respondWithJSON(w, 201, jsonUser)
 }
@@ -174,6 +176,7 @@ func (cfg *apiConfig) handlerApiUpdate(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: u.CreatedAt,
 		UpdatedAt: u.UpdatedAt,
 		Email:     u.Email,
+		IsRed:     u.IsRed,
 	}
 	respondWithJSON(w, 200, jsonUser)
 }
@@ -233,8 +236,43 @@ func (cfg *apiConfig) handlerApiLogin(w http.ResponseWriter, r *http.Request) {
 		Email:        user.Email,
 		Token:        token,
 		RefreshToken: rT.Token,
+		IsRed:        user.IsRed,
 	}
 	respondWithJSON(w, 200, jsonUser)
+}
+
+func (cfg *apiConfig) handlerApiPolka(w http.ResponseWriter, r *http.Request) {
+	type dataP struct {
+		UserID uuid.UUID `json:"user_id"`
+	}
+	type parameters struct {
+		Event string `json:"event"`
+		Data  dataP  `json:"data"`
+	}
+	params := parameters{}
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 400, "bad request")
+		return
+	}
+	if params.Event != "user.upgraded" {
+		w.WriteHeader(http.StatusNoContent) // code: 204
+		return
+	}
+	user, err := cfg.dbQueries.UpdateUserStatus(r.Context(), params.Data.UserID)
+	if err != nil {
+		respondWithError(w, 404, "user not found")
+		return
+	}
+	jsonUser := User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+		IsRed:     user.IsRed,
+	}
+	respondWithJSON(w, 204, jsonUser)
 }
 
 func (cfg *apiConfig) handlerApiRefresh(w http.ResponseWriter, r *http.Request) {

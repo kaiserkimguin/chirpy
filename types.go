@@ -13,6 +13,7 @@ type User struct {
 	Email        string    `json:"email"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
+	IsRed        bool      `json:"is_chirpy_red"`
 }
 
 type Chirp struct {
