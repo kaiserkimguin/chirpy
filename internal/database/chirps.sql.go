@@ -37,6 +37,25 @@ func (q *Queries) CreatePost(ctx context.Context, arg CreatePostParams) (Chirp, 
 	return i, err
 }
 
+const deleteChirp = `-- name: DeleteChirp :one
+DELETE FROM chirps
+WHERE id = $1
+RETURNING id, created_at, updated_at, body, user_id
+`
+
+func (q *Queries) DeleteChirp(ctx context.Context, id uuid.UUID) (Chirp, error) {
+	row := q.db.QueryRowContext(ctx, deleteChirp, id)
+	var i Chirp
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Body,
+		&i.UserID,
+	)
+	return i, err
+}
+
 const deletePosts = `-- name: DeletePosts :many
 DELETE FROM chirps
 RETURNING id, created_at, updated_at, body, user_id

@@ -32,6 +32,7 @@ func main() {
 	ServeMux := http.NewServeMux()
 	ServeMux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	ServeMux.HandleFunc("POST /api/users", cfg.handlerApiUsers)
+	ServeMux.HandleFunc("PUT /api/users", cfg.handlerApiUpdate)
 	ServeMux.HandleFunc("POST /api/login", cfg.handlerApiLogin)
 	ServeMux.HandleFunc("POST /api/refresh", cfg.handlerApiRefresh)
 	ServeMux.HandleFunc("POST /api/revoke", cfg.handlerApiRevoke)
@@ -39,6 +40,7 @@ func main() {
 	ServeMux.HandleFunc("POST /admin/reset/", cfg.handlerReset)
 	ServeMux.HandleFunc("GET /api/healthz", handlerHealthz)
 	ServeMux.HandleFunc("POST /api/chirps", cfg.handlerPostChirp)
+	ServeMux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.handlerDeleteChirp)
 	ServeMux.HandleFunc("GET /api/chirps", cfg.handlerGetChirps)
 	ServeMux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirp)
 	server := &http.Server{
@@ -129,6 +131,51 @@ func (cfg *apiConfig) handlerApiUsers(w http.ResponseWriter, r *http.Request) {
 		Email:     u.Email,
 	}
 	respondWithJSON(w, 201, jsonUser)
+}
+
+func (cfg *apiConfig) handlerApiUpdate(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+	params := parameters{}
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 400, "bad request")
+		return
+	}
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "unauthorized")
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.tokenSecret)
+	if err != nil {
+		respondWithError(w, 401, "unauthorized")
+		return
+	}
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(w, 500, "something went wrong")
+		return
+	}
+	u, err := cfg.dbQueries.UpdateUserData(r.Context(), database.UpdateUserDataParams{
+		Email:          params.Email,
+		HashedPassword: hashedPassword,
+		ID:             userID,
+	})
+	if err != nil {
+		respondWithError(w, 500, "something went wrong")
+		return
+	}
+	jsonUser := User{
+		ID:        u.ID,
+		CreatedAt: u.CreatedAt,
+		UpdatedAt: u.UpdatedAt,
+		Email:     u.Email,
+	}
+	respondWithJSON(w, 200, jsonUser)
 }
 
 func (cfg *apiConfig) handlerApiLogin(w http.ResponseWriter, r *http.Request) {
@@ -294,6 +341,43 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 		chirpsJson = append(chirpsJson, chripJSON)
 	}
 	respondWithJSON(w, 200, chirpsJson)
+}
+
+func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "unauthorized")
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.tokenSecret)
+	if err != nil {
+		respondWithError(w, 401, "unauthorized")
+		return
+	}
+	chirpIDString := r.PathValue("chirpID")
+	chirpID, err := uuid.Parse(chirpIDString)
+	if err != nil {
+		respondWithError(w, 400, "bad request")
+		return
+	}
+	chirp, err := cfg.dbQueries.GetChirp(r.Context(), chirpID)
+	if err != nil {
+		respondWithError(w, 404, "chirp not found")
+		return
+	}
+	if chirp.UserID != userID {
+		respondWithError(w, 403, "unauthorized")
+		return
+	}
+	chirpDel, err := cfg.dbQueries.DeleteChirp(r.Context(), chirpID)
+	if err != nil {
+		respondWithError(w, 500, "something went wrong")
+		return
+	}
+	chirpJSON := Chirp{
+		ID: chirpDel.ID,
+	}
+	respondWithJSON(w, 204, chirpJSON)
 }
 
 func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
