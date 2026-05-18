@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -242,6 +243,15 @@ func (cfg *apiConfig) handlerApiLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerApiPolka(w http.ResponseWriter, r *http.Request) {
+	apiKey, err := auth.GetApiKey(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "unauthorized")
+		return
+	}
+	if apiKey != os.Getenv("POLKA_KEY") {
+		respondWithError(w, 401, "unauthorized")
+		return
+	}
 	type dataP struct {
 		UserID uuid.UUID `json:"user_id"`
 	}
@@ -251,7 +261,7 @@ func (cfg *apiConfig) handlerApiPolka(w http.ResponseWriter, r *http.Request) {
 	}
 	params := parameters{}
 	decoder := json.NewDecoder(r.Body)
-	err := decoder.Decode(&params)
+	err = decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, 400, "bad request")
 		return
@@ -361,6 +371,42 @@ func (cfg *apiConfig) handlerPostChirp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
+	// check for author argument
+	authorIDString := r.URL.Query().Get("author_id")
+	// check for sorting argument
+	sortingArg := r.URL.Query().Get("sort")
+	if authorIDString != "" {
+		authorID, err := uuid.Parse(authorIDString)
+		if err != nil {
+			respondWithError(w, 400, "bad request")
+			return
+		}
+		chirps, err := cfg.dbQueries.GetChirpsByAuthor(r.Context(), authorID)
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		var chirpsJson []Chirp
+
+		for _, chi := range chirps {
+			chripJSON := Chirp{
+				ID:        chi.ID,
+				CreatedAt: chi.CreatedAt,
+				UpdatedAt: chi.UpdatedAt,
+				Body:      chi.Body,
+				UserID:    chi.UserID,
+			}
+			chirpsJson = append(chirpsJson, chripJSON)
+		}
+		if sortingArg == "desc" {
+			sort.Slice(chirpsJson, func(i, j int) bool {
+				return chirpsJson[i].CreatedAt.After(chirpsJson[j].CreatedAt)
+			})
+		}
+		respondWithJSON(w, 200, chirpsJson)
+		return
+	}
+
 	chirps, err := cfg.dbQueries.GetChirps(r.Context())
 	if err != nil {
 		respondWithError(w, 500, err.Error())
@@ -377,6 +423,11 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 			UserID:    chi.UserID,
 		}
 		chirpsJson = append(chirpsJson, chripJSON)
+	}
+	if sortingArg == "desc" {
+		sort.Slice(chirpsJson, func(i, j int) bool {
+			return chirpsJson[i].CreatedAt.After(chirpsJson[j].CreatedAt)
+		})
 	}
 	respondWithJSON(w, 200, chirpsJson)
 }

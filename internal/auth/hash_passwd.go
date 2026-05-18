@@ -75,6 +75,20 @@ func GetBearerToken(headers http.Header) (string, error) {
 	return tokenString, nil
 }
 
+func GetApiKey(headers http.Header) (string, error) {
+	tokenStringRaw := headers.Get("Authorization")
+	if tokenStringRaw == "" {
+		return "", errors.New("unauthorized")
+	}
+	// cut prefix ApiKey
+	tokenStringCut, ok := strings.CutPrefix(tokenStringRaw, "ApiKey")
+	if !ok {
+		return "", errors.New("unauthorized")
+	}
+	tokenString := strings.TrimSpace(tokenStringCut)
+	return tokenString, nil
+}
+
 func MakeRefreshToken() string {
 	randomData := make([]byte, 32)
 	rand.Read(randomData)
